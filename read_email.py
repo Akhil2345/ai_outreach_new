@@ -2,8 +2,8 @@ import imaplib
 import email
 from email.header import decode_header
 
-EMAIL = "akhil627283@gmail.com"
-APP_PASSWORD = "hrbjdnrkboscfocu"
+EMAIL = "email_Id"
+APP_PASSWORD = "App_Password"
 
 # Connect to Gmail
 imap = imaplib.IMAP4_SSL("imap.gmail.com")
