@@ -1,79 +1,144 @@
 import imaplib
 import email
-from email.header import decode_header
-import smtplib
 from email.mime.text import MIMEText
-from ollama import chat
+import smtplib
+import time
+import csv
+import re
+from datetime import datetime
+import subprocess
+from textblob import TextBlob
+import ollama
+from rich import print
 
+
+# CONFIGURATION
 EMAIL = "akhil627283@gmail.com"
 APP_PASSWORD = "hrbjdnrkboscfocu"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+IMAP_SERVER = "imap.gmail.com"
 
-def get_email_body(msg):
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type == "text/plain":
-                return part.get_payload(decode=True).decode()
+# 📊 Sentiment Scorer
+def get_sentiment(text):
+    blob = TextBlob(text)
+    polarity = blob.sentiment.polarity
+    if polarity > 0.2:
+        return "Positive"
+    elif polarity < -0.2:
+        return "Negative"
     else:
-        return msg.get_payload(decode=True).decode()
-    return ""
+        return "Neutral"
 
-print("Connecting to Gmail IMAP...")
-imap = imaplib.IMAP4_SSL("imap.gmail.com")
-imap.login(EMAIL, APP_PASSWORD)
-print("Logged in successfully.")
+# 🧠 Jaccard Relevance Scorer
+def jaccard_similarity(text1, text2):
+    def clean_and_tokenize(text):
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text.lower())
+        return set(text.split())
 
-imap.select("inbox")
-print("Inbox selected.")
+    set1 = clean_and_tokenize(text1)
+    set2 = clean_and_tokenize(text2)
 
-status, messages = imap.search(None, 'UNSEEN')
-email_ids = messages[0].split()
+    if not set1 or not set2:
+        return 0.0
 
-print(f"Found {len(email_ids)} unread emails.")
+    return round(len(set1 & set2) / len(set1 | set2), 3)
 
-for e_id in email_ids:
-    print("\nFetching email ID:", e_id.decode())
-    res, msg_data = imap.fetch(e_id, "(RFC822)")
-    raw_email = msg_data[0][1]
-    msg = email.message_from_bytes(raw_email)
+# 📝 Logging
+def write_log(email, subject, body, status, time_taken, sentiment, relevance):
+    with open("logs/email_log.csv", "a") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            email, subject, body, status,
+            round(time_taken, 2), sentiment, relevance
+        ])
+    print(f"📝 Logged: {status} -> {email}")
 
-    subject = decode_header(msg["Subject"])[0][0]
-    if isinstance(subject, bytes):
-        subject = subject.decode()
+# 🔁 Main Agent
+def main():
+    print("🔐 Connecting to Gmail...")
+    imap = imaplib.IMAP4_SSL(IMAP_SERVER)
+    imap.login(EMAIL, APP_PASSWORD)
+    imap.select("inbox")
 
-    from_address = email.utils.parseaddr(msg.get("From"))[1]
-    print("From:", from_address)
-    print("Subject:", subject)
+    status, messages = imap.search(None, 'UNSEEN')
+    email_ids = messages[0].split()
+    print(f"📥 Found {len(email_ids)} unread emails\n")
 
-    body = get_email_body(msg)
-    print("Body received:\n", body)
+    for num in email_ids:
+        start_time = time.time()
 
-    print("Sending body to Mistral (via Ollama)...")
-    mistral_response = chat(
-        model="mistral",
-        messages=[
-            {"role": "system", "content": "You are an assistant replying to emails."},
-            {"role": "user", "content": body}
-        ]
-    )
+        res, data = imap.fetch(num, "(RFC822)")
+        msg = email.message_from_bytes(data[0][1])
+        from_address = email.utils.parseaddr(msg["From"])[1]
+        subject = msg["Subject"]
+        print(f"✉️ From: {from_address}")
+        print(f"🧾 Subject: {subject}")
 
-    reply_text = mistral_response["message"]["content"]
-    print("Generated reply:\n", reply_text)
+        # 🔍 Extract Body
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_payload(decode=True).decode()
+                    break
+        else:
+            body = msg.get_payload(decode=True).decode()
 
-    print("Connecting to Gmail SMTP...")
-    smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-    smtp.login(EMAIL, APP_PASSWORD)
+        print(f"📄 Body:\n{body}\n")
 
-    reply = MIMEText(reply_text)
-    reply["Subject"] = f"Re: {subject}"
-    reply["From"] = EMAIL
-    reply["To"] = from_address
+        # 🧠 Ask Mistral for Reply
+        response = ollama.chat(
+            model='mistral',
+            messages=[{'role': 'user', 'content': body}]
+        )
+        reply = response['message']['content']
+        print(f"[blue]🧾 Suggested Reply:\n{reply}[/blue]")
 
-    print("Sending reply email...")
-    smtp.sendmail(EMAIL, from_address, reply.as_string())
-    smtp.quit()
-    print("Reply sent to:", from_address)
+        # 🔬 Evaluate Metrics
+        sentiment = get_sentiment(reply)
+        relevance_score = jaccard_similarity(body, reply)
+        print(f"🧠 Relevance Score: {relevance_score}")
+        print(f"🎭 Sentiment: {sentiment}\n")
 
-imap.logout()
-print("Logged out of Gmail.")
+        # 🤖 Ask User
+        choice = input("What do you want to do with this reply?\n1. Send as-is  2. Edit  3. Skip\nEnter choice (1/2/3): ").strip()
 
+        if choice == "3":
+            print("⏭️ Skipped.")
+            write_log(from_address, subject, "Skipped", "Rejected", time.time() - start_time, "N/A", 0.0)
+            continue
+
+        if choice == "2":
+            with open("temp_reply.txt", "w") as f:
+                f.write(reply)
+            print("✍️ Edit the file (Ctrl+O to save, Ctrl+X to exit)")
+            subprocess.call(["nano", "temp_reply.txt"])
+            with open("temp_reply.txt", "r") as f:
+                reply = f.read()
+            status = "Edited"
+        else:
+            status = "Sent"
+
+        # 📤 Send Reply
+        msg_reply = MIMEText(reply)
+        msg_reply["Subject"] = f"Re: {subject}"
+        msg_reply["From"] = EMAIL
+        msg_reply["To"] = from_address
+
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL, APP_PASSWORD)
+        server.sendmail(EMAIL, from_address, msg_reply.as_string())
+        server.quit()
+
+        print(f"✅ Sent reply to: {from_address}")
+
+        write_log(from_address, subject, reply, status, time.time() - start_time, sentiment, relevance_score)
+
+    imap.logout()
+    print("📤 Done. Logged out.")
+
+if __name__ == "__main__":
+    main()

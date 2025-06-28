@@ -1,10 +1,5 @@
-__pycache__/
 .env
+__pycache__/
 *.pyc
-*.log
-*.sqlite3
-*.ipynb_checkpoints
-env/
-venv/
-node_modules/
-.DS_Store
+logs/email_log.csv
+temp_reply.txt
