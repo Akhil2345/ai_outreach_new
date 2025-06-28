@@ -13,8 +13,8 @@ from rich import print
 
 
 # CONFIGURATION
-EMAIL = "akhil627283@gmail.com"
-APP_PASSWORD = "hrbjdnrkboscfocu"
+EMAIL = "email_id"
+APP_PASSWORD = "App_Password"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 IMAP_SERVER = "imap.gmail.com"
